@@ -12,125 +12,131 @@ export default async function handler(req, res) {
     const ODOO_API_KEY = '40555142d8e5d11314139e1cd13f85a8438b0d66';
 
     try {
-        // Obtener datos del pedido (puede venir en order o directamente)
         const orderData = req.body.order || req.body;
-        console.log('📦 Pedido recibido:', orderData.orderNumber);
+        console.log('📦 Pedido recibido:', JSON.stringify(orderData));
 
-        // Autenticar con Odoo
-        const authRes = await fetch(`${ODOO_URL}/web/session/authenticate`, {
+        // Primero autenticar via XML-RPC
+        const authXml = `<?xml version="1.0"?>
+        <methodCall>
+            <methodName>authenticate</methodName>
+            <params>
+                <param><value><string>${ODOO_DB}</string></value></param>
+                <param><value><string>${ODOO_USERNAME}</string></value></param>
+                <param><value><string>${ODOO_API_KEY}</string></value></param>
+                <param><value><struct></struct></value></param>
+            </params>
+        </methodCall>`;
+
+        const authRes = await fetch(`${ODOO_URL}/xmlrpc/2/common`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                jsonrpc: '2.0',
-                method: 'call',
-                params: { db: ODOO_DB, login: ODOO_USERNAME, password: ODOO_API_KEY },
-                id: 1
-            })
-        });
-        
-        const authData = await authRes.json();
-        console.log('🔐 Auth response:', authData.result ? 'OK' : 'FAILED');
-        
-        if (!authData.result?.uid) {
-            console.log('❌ Auth error:', JSON.stringify(authData));
-            return res.status(401).json({ success: false, error: 'Auth failed', details: authData });
-        }
-
-        const cookie = authRes.headers.get('set-cookie')?.split(';')[0] || '';
-
-        // Preparar líneas del pedido
-        const items = orderData.items || [];
-        const orderLines = items.map(item => [0, 0, {
-            product_id: 1,
-            product_uom_qty: item.quantity || 1,
-            price_unit: item.unitPrice || item.price || 0,
-            name: item.product || item.name || 'Producto'
-        }]);
-
-        // Agregar delivery si existe
-        const deliveryCost = orderData.delivery?.cost || orderData.deliveryCost || 0;
-        if (deliveryCost > 0) {
-            orderLines.push([0, 0, { 
-                product_id: 1, 
-                product_uom_qty: 1, 
-                price_unit: deliveryCost, 
-                name: 'Delivery' 
-            }]);
-        }
-
-        // Notas del pedido
-        const customer = orderData.customer || {};
-        const notes = [
-            `📱 Pedido: ${orderData.orderNumber || 'N/A'}`,
-            `👤 Cliente: ${customer.name || 'N/A'}`,
-            `📞 Teléfono: ${customer.phone || orderData.phone || 'N/A'}`,
-            `📍 Dirección: ${customer.address || orderData.address || 'Retiro en local'}`,
-            `💳 Pago: ${orderData.payment?.method || orderData.paymentMethod || 'N/A'}`,
-            `💰 Total: $${orderData.payment?.total || orderData.total || 0}`
-        ].join('\n');
-
-        console.log('📝 Creando pedido en Odoo...');
-
-        // Crear pedido en Odoo
-        const createRes = await fetch(`${ODOO_URL}/web/dataset/call_kw`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Cookie': cookie },
-            body: JSON.stringify({
-                jsonrpc: '2.0',
-                method: 'call',
-                params: {
-                    model: 'sale.order',
-                    method: 'create',
-                    args: [{ 
-                        partner_id: 1, 
-                        order_line: orderLines, 
-                        note: notes, 
-                        client_order_ref: orderData.orderNumber || `WEB-${Date.now()}`
-                    }],
-                    kwargs: {}
-                },
-                id: 2
-            })
+            headers: { 'Content-Type': 'text/xml' },
+            body: authXml
         });
 
-        const createData = await createRes.json();
-        console.log('📄 Create response:', JSON.stringify(createData));
-        
-        if (createData.result) {
-            console.log('✅ Pedido creado con ID:', createData.result);
-            
-            // Confirmar pedido
-            await fetch(`${ODOO_URL}/web/dataset/call_kw`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Cookie': cookie },
-                body: JSON.stringify({
-                    jsonrpc: '2.0',
-                    method: 'call',
-                    params: { 
-                        model: 'sale.order', 
-                        method: 'action_confirm', 
-                        args: [[createData.result]], 
-                        kwargs: {} 
-                    },
-                    id: 3
-                })
+        const authText = await authRes.text();
+        console.log('🔐 Auth response:', authText.substring(0, 200));
+
+        // Extraer UID de la respuesta
+        const uidMatch = authText.match(/<int>(\d+)<\/int>/);
+        if (!uidMatch) {
+            return res.status(401).json({ 
+                success: false, 
+                error: 'Auth failed - no UID returned',
+                response: authText.substring(0, 500)
             });
+        }
 
+        const uid = uidMatch[1];
+        console.log('✅ UID obtenido:', uid);
+
+        // Preparar datos del pedido
+        const items = orderData.items || [];
+        const customer = orderData.customer || {};
+        
+        const productLines = items.map(item => {
+            const name = item.product || item.name || 'Producto';
+            const qty = item.quantity || 1;
+            const price = item.unitPrice || item.price || 0;
+            return `${qty}x ${name} - $${price * qty}`;
+        }).join('\n');
+
+        const deliveryCost = orderData.delivery?.cost || orderData.deliveryCost || 0;
+        const total = orderData.payment?.total || orderData.total || 0;
+
+        const noteText = [
+            `PEDIDO WEB: ${orderData.orderNumber || 'N/A'}`,
+            ``,
+            `CLIENTE: ${customer.name || 'N/A'}`,
+            `TELEFONO: ${customer.phone || orderData.phone || 'N/A'}`,
+            `DIRECCION: ${customer.address || orderData.address || 'Retiro en local'}`,
+            ``,
+            `PRODUCTOS:`,
+            productLines,
+            ``,
+            deliveryCost > 0 ? `DELIVERY: $${deliveryCost}` : '',
+            `TOTAL: $${total}`,
+            ``,
+            `PAGO: ${orderData.payment?.method || orderData.paymentMethod || 'N/A'}`
+        ].filter(Boolean).join('\n');
+
+        // Crear pedido via XML-RPC
+        const createXml = `<?xml version="1.0"?>
+        <methodCall>
+            <methodName>execute_kw</methodName>
+            <params>
+                <param><value><string>${ODOO_DB}</string></value></param>
+                <param><value><int>${uid}</int></value></param>
+                <param><value><string>${ODOO_API_KEY}</string></value></param>
+                <param><value><string>sale.order</string></value></param>
+                <param><value><string>create</string></value></param>
+                <param><value><array><data>
+                    <value><struct>
+                        <member>
+                            <name>partner_id</name>
+                            <value><int>1</int></value>
+                        </member>
+                        <member>
+                            <name>note</name>
+                            <value><string>${noteText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</string></value>
+                        </member>
+                        <member>
+                            <name>client_order_ref</name>
+                            <value><string>${orderData.orderNumber || 'WEB-' + Date.now()}</string></value>
+                        </member>
+                    </struct>
+                </data></array></value></param>
+            </params>
+        </methodCall>`;
+
+        const createRes = await fetch(`${ODOO_URL}/xmlrpc/2/object`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/xml' },
+            body: createXml
+        });
+
+        const createText = await createRes.text();
+        console.log('📄 Create response:', createText.substring(0, 300));
+
+        const orderIdMatch = createText.match(/<int>(\d+)<\/int>/);
+        if (orderIdMatch) {
+            const orderId = orderIdMatch[1];
+            console.log('✅ Pedido creado:', orderId);
+            
             return res.status(200).json({ 
                 success: true, 
-                odooOrderId: createData.result,
+                odooOrderId: orderId,
                 message: 'Pedido creado en Odoo'
             });
         }
 
-        console.log('❌ Error al crear:', JSON.stringify(createData));
         return res.status(500).json({ 
             success: false, 
-            error: 'Failed to create order',
-            details: createData
+            error: 'No se pudo crear el pedido',
+            response: createText.substring(0, 500)
         });
+
     } catch (error) {
-        console.log('❌ Exception:', error.message);
+        console.log('❌ Error:', error.message);
         return res.status(500).json({ success: false, error: error.message });
     }
 }
