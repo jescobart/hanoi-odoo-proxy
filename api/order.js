@@ -159,7 +159,38 @@ ${deliveryCost > 0 ? `DELIVERY: $${deliveryCost.toLocaleString('es-CL')}\n` : ''
 PAGO: ${orderData.payment?.method || 'No especificado'}
 ═══════════════════════════`;
 
-        // 4. Crear pedido de venta
+        // 4. Crear líneas de pedido
+        const orderLines = items.map(item => {
+            const name = item.product || item.name || 'Producto';
+            const qty = item.quantity || 1;
+            const price = item.unitPrice || item.price || 0;
+            const extras = item.extras ? ` (${item.extras})` : '';
+            return `<value><array><data>
+                <value><int>0</int></value>
+                <value><int>0</int></value>
+                <value><struct>
+                    <member><name>name</name><value><string>${(name + extras).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</string></value></member>
+                    <member><name>product_uom_qty</name><value><double>${qty}</double></value></member>
+                    <member><name>price_unit</name><value><double>${price}</double></value></member>
+                </struct></value>
+            </data></array></value>`;
+        }).join('\n');
+
+        // Agregar línea de delivery si existe
+        let deliveryLine = '';
+        if (deliveryCost > 0) {
+            deliveryLine = `<value><array><data>
+                <value><int>0</int></value>
+                <value><int>0</int></value>
+                <value><struct>
+                    <member><name>name</name><value><string>Delivery</string></value></member>
+                    <member><name>product_uom_qty</name><value><double>1</double></value></member>
+                    <member><name>price_unit</name><value><double>${deliveryCost}</double></value></member>
+                </struct></value>
+            </data></array></value>`;
+        }
+
+        // 5. Crear pedido de venta con líneas
         const createOrderXml = `<?xml version="1.0"?>
         <methodCall>
             <methodName>execute_kw</methodName>
@@ -172,8 +203,12 @@ PAGO: ${orderData.payment?.method || 'No especificado'}
                 <param><value><array><data>
                     <value><struct>
                         <member><name>partner_id</name><value><int>${partnerId}</int></value></member>
-                        <member><name>note</name><value><string>${noteText.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</string></value></member>
                         <member><name>client_order_ref</name><value><string>${orderData.orderNumber}</string></value></member>
+                        <member><name>note</name><value><string>Pago: ${orderData.payment?.method || 'No especificado'}</string></value></member>
+                        <member><name>order_line</name><value><array><data>
+                            ${orderLines}
+                            ${deliveryLine}
+                        </data></array></value></member>
                     </struct></value>
                 </data></array></value></param>
             </params>
