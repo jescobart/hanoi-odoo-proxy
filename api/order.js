@@ -159,11 +159,13 @@ ${deliveryCost > 0 ? `DELIVERY: $${deliveryCost.toLocaleString('es-CL')}\n` : ''
 PAGO: ${orderData.payment?.method || 'No especificado'}
 ═══════════════════════════`;
 
-        // 4. Crear líneas de pedido
+        // 4. Crear líneas de pedido (usando subtotal que incluye salsas)
         const orderLines = items.map(item => {
             const name = item.product || item.name || 'Producto';
             const qty = item.quantity || 1;
-            const price = item.unitPrice || item.price || 0;
+            // Usar subtotal/qty para obtener precio unitario con salsas incluidas
+            const subtotal = item.subtotal || (item.unitPrice || item.price || 0) * qty;
+            const priceWithExtras = subtotal / qty;
             const extras = item.extras ? ` (${item.extras})` : '';
             return `<value><array><data>
                 <value><int>0</int></value>
@@ -171,7 +173,7 @@ PAGO: ${orderData.payment?.method || 'No especificado'}
                 <value><struct>
                     <member><name>name</name><value><string>${(name + extras).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')}</string></value></member>
                     <member><name>product_uom_qty</name><value><double>${qty}</double></value></member>
-                    <member><name>price_unit</name><value><double>${price}</double></value></member>
+                    <member><name>price_unit</name><value><double>${priceWithExtras}</double></value></member>
                 </struct></value>
             </data></array></value>`;
         }).join('\n');
